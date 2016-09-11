@@ -14,6 +14,8 @@ import (
 	"sync"
 	"unicode"
 
+	"gitlab.kohlby.fr/adrienkohlbecker/ci/utils/errors"
+
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
 
@@ -27,6 +29,13 @@ var forbiddenCharsRegexp = regexp.MustCompile("[^a-zA-Z0-9\\.\\/ ]")
 const copyParalellism = 5
 
 var playlistsToExport = []string{"BEST", "GOOGLE PLAY", "DNB", "TRANCE", "ELECTRONNIE", "ABOU", "COLINE", "ELECTROSYLVESTRE", "STARRED", "GRATTE", "PARTY"}
+
+const (
+	CodecUnknown = iota
+	CodecMP3
+	CodecAAC
+	CodecALAC
+)
 
 func init() {
 	tracks = mapset.NewSet()
@@ -252,12 +261,12 @@ func copyTrack(basePath, destPath string, track m3u.Track) error {
 func copyFile(src, dst string) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
-		return
+		return err
 	}
 	defer in.Close()
 	out, err := os.Create(dst)
 	if err != nil {
-		return
+		return err
 	}
 	defer func() {
 		cerr := out.Close()
@@ -266,22 +275,63 @@ func copyFile(src, dst string) (err error) {
 		}
 	}()
 	if _, err = io.Copy(out, in); err != nil {
-		return
+		return err
 	}
 	err = out.Sync()
 	if err != nil {
-		return
+		return err
 	}
 
-	cmd := exec.Command("nice", "/usr/local/bin/aacgain", "-r", "-k", "-s", "r", "-d", "9", dst)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
+	codec, err := detectCodec(dst)
 	if err != nil {
-		return
+		return err
+	}
+
+	if codec != CodecALAC {
+
+		cmd := exec.Command("nice", "/usr/local/bin/aacgain", "-r", "-k", "-s", "r", "-d", "9", dst)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err := cmd.Run()
+		if err != nil {
+			return err
+		}
+
 	}
 
 	return
+}
+
+func detectCodec(file string) (int, errors.Error) {
+
+	if strings.HasSuffix(file, ".mp3") {
+		return CodecMP3, nil
+	}
+
+	if strings.HasSuffix(file, ".m4a") {
+
+		cmd := exec.Command("mp4info", file)
+		cmd.Stderr = os.Stderr
+		out, err := cmd.Output()
+		if err != nil {
+			return CodecUnknown, errors.Wrap(err, 0)
+		}
+
+		sout := string(out)
+		if strings.Contains(sout, "audio	alac") {
+			return CodecALAC, nil
+		}
+
+		if strings.Contains(sout, "audio	MPEG-4 AAC") {
+			return CodecAAC, nil
+		}
+
+		return CodecUnknown, errors.Errorf("Format unrecognized by mp4info: %s", file)
+
+	}
+
+	return CodecUnknown, errors.Errorf("Unknow file format: %s", file)
+
 }
 
 func addPlaylists(paths []string) (map[string]m3u.Playlist, error) {
