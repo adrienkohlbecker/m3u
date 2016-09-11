@@ -1,67 +1,126 @@
 package main
 
 import (
+	"crypto/md5"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
-	"os/user"
+	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
 
-	"gitlab.kohlby.fr/adrienkohlbecker/ci/utils/errors"
-
-	"golang.org/x/text/transform"
-	"golang.org/x/text/unicode/norm"
-
 	"github.com/deckarep/golang-set"
 	"github.com/ushis/m3u"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
+	"gopkg.in/cheggaaa/pb.v1"
+
+	"gitlab.kohlby.fr/adrienkohlbecker/ci/utils/errors"
 )
-
-var tracks mapset.Set
-var forbiddenCharsRegexp = regexp.MustCompile("[^a-zA-Z0-9\\.\\/ ]")
-
-const copyParalellism = 5
 
 var playlistsToExport = []string{"BEST", "GOOGLE PLAY", "DNB", "TRANCE", "ELECTRONNIE", "ABOU", "COLINE", "ELECTROSYLVESTRE", "STARRED", "GRATTE", "PARTY"}
 
+const itunesMusicDir = "/Users/adrien/Music/iTunes/iTunes Media/Music"
+const destFolder = "/Users/adrien/Dropbox/Music"
+const hashXattrName = "fr.kohlby.m3u:hash"
+
+var forbiddenCharsRegexp = regexp.MustCompile("[^a-zA-Z0-9\\.\\/ ]")
+var mp4InfoRegexp = regexp.MustCompile("(?s)audio\\s+(.*), (\\d+\\.\\d+) secs.*Name: ([^\\n]*)\\n[^\\n]*Artist: ([^\\n]*)")
+
+type codec int
+
 const (
-	CodecUnknown = iota
-	CodecMP3
-	CodecAAC
-	CodecALAC
+	codecUnknown codec = iota
+	codecMP3
+	codecAAC
+	codecALAC
 )
 
-func init() {
-	tracks = mapset.NewSet()
+func fatal(err errors.Error) {
+	fmt.Println(err.ErrorStack())
+	os.Exit(1)
 }
 
 func main() {
 
-	currentUser, err := user.Current()
+	log.Println("Exporting playlists from iTunes...")
+
+	m3uPath, err := createTemporaryDirectory()
 	if err != nil {
-		panic(err)
+		fatal(err)
 	}
-
-	basePath := filepath.Join(currentUser.HomeDir, "Music/iTunes/iTunes Media/Music")
-	destPath := filepath.Join(currentUser.HomeDir, "exported_playlists")
-
-	err = os.MkdirAll(destPath, 0755)
-	if err != nil {
-		panic(err)
-	}
-
-	m3uPath, err := ioutil.TempDir(os.TempDir(), "m3us")
-	if err != nil {
-		panic(err)
-	}
-
 	defer os.RemoveAll(m3uPath)
+
+	err = exportPlaylistsFromItunes(m3uPath)
+	if err != nil {
+		fatal(err)
+	}
+
+	playlistFiles, err := listPlaylistFiles(m3uPath)
+	if err != nil {
+		fatal(err)
+	}
+
+	playlists, err := readPlaylists(playlistFiles)
+	if err != nil {
+		fatal(err)
+	}
+
+	log.Println("done")
+
+	uniqueTracks := buildTrackSet(playlists)
+
+	log.Println("Reading source tracks metadata...")
+
+	metadatas, err := readTracksMetadata(uniqueTracks)
+	if err != nil {
+		fatal(err)
+	}
+
+	log.Println("done")
+	log.Println("Copying tracks...")
+
+	err = ensureFolderExists(destFolder)
+	if err != nil {
+		fatal(err)
+	}
+
+	err = copyTracks(destFolder, metadatas)
+	if err != nil {
+		fatal(err)
+	}
+
+	log.Println("done")
+	log.Println("Writing playlists...")
+
+	err = exportPlaylists(destFolder, playlists, metadatas)
+	if err != nil {
+		fatal(err)
+	}
+
+	log.Println("done")
+
+}
+
+func createTemporaryDirectory() (string, errors.Error) {
+
+	m3uPath, err := ioutil.TempDir(os.TempDir(), "m3u")
+	if err != nil {
+		return "", errors.Wrap(err, 0)
+	}
+	return m3uPath, nil
+
+}
+
+func exportPlaylistsFromItunes(exportDirectory string) errors.Error {
 
 	cmd := exec.Command(
 		"java",
@@ -69,18 +128,22 @@ func main() {
 		"./vendor/iTunesExportScala-2.2.2/itunesexport.jar",
 		"-fileTypes=ALL",
 		fmt.Sprintf("-includePlaylist=%s", strings.Join(playlistsToExport, ",")),
-		fmt.Sprintf("-outputDir=%s", m3uPath),
+		fmt.Sprintf("-outputDir=%s", exportDirectory),
 	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
+	err := cmd.Run()
 	if err != nil {
-		log.Fatal(err)
+		return errors.Wrap(err, 0)
 	}
+
+	return nil
+
+}
+
+func listPlaylistFiles(exportDirectory string) ([]string, errors.Error) {
 
 	paths := []string{}
 
-	err = filepath.Walk(m3uPath, func(path string, info os.FileInfo, walkErr error) error {
+	err := filepath.Walk(exportDirectory, func(path string, info os.FileInfo, walkErr error) error {
 
 		if walkErr != nil {
 			return walkErr
@@ -96,23 +159,162 @@ func main() {
 
 	})
 	if err != nil {
-		panic(err)
+		return paths, errors.Wrap(err, 0)
 	}
 
-	playlists, err := addPlaylists(paths)
-	if err != nil {
-		panic(err)
+	return paths, nil
+
+}
+
+func readPlaylists(playlistFiles []string) (map[string]m3u.Playlist, errors.Error) {
+
+	playlists := make(map[string]m3u.Playlist)
+
+	for _, path := range playlistFiles {
+
+		pl, err := readPlaylist(path)
+		if err != nil {
+			return playlists, err
+		}
+		name := filepath.Base(path)
+
+		playlists[name] = pl
+
 	}
 
-	err = copyTracks(basePath, destPath, tracks)
+	return playlists, nil
+
+}
+
+func readPlaylist(path string) (m3u.Playlist, errors.Error) {
+
+	f, err := os.Open(path)
 	if err != nil {
-		panic(err)
+		return nil, errors.Wrap(err, 0)
+	}
+	defer f.Close()
+
+	pl, err := m3u.Parse(f)
+	if err != nil {
+		return nil, errors.Wrap(err, 0)
 	}
 
-	err = exportPlaylists(basePath, destPath, playlists)
-	if err != nil {
-		panic(err)
+	for i, track := range pl {
+		track.Path = strings.Replace(track.Path, "file://", "", 1)
+		pl[i] = track
 	}
+
+	return pl, nil
+
+}
+
+func buildTrackSet(playlists map[string]m3u.Playlist) mapset.Set {
+
+	uniqueTracks := mapset.NewSet()
+	for _, pl := range playlists {
+		for _, track := range pl {
+			uniqueTracks.Add(track.Path)
+		}
+	}
+
+	return uniqueTracks
+
+}
+
+type trackMetadata struct {
+	OriginalPath string
+	CleanedPath  string
+	Artist       string
+	Name         string
+	Length       float64
+	Hash         string
+	Codec        codec
+}
+
+func readTracksMetadata(tracks mapset.Set) (map[string]*trackMetadata, errors.Error) {
+
+	tracksMetadata := make(map[string]*trackMetadata)
+	mutex := sync.Mutex{}
+	total := tracks.Cardinality()
+
+	err := parallelize(total, tracks.Iter(), func(item interface{}) errors.Error {
+
+		path, ok := item.(string)
+		if !ok {
+			return errors.Errorf("only put strings in unique track index")
+		}
+
+		metadata, err := readTrackMetadata(path)
+		if err != nil {
+			return err
+		}
+
+		mutex.Lock()
+		tracksMetadata[path] = metadata
+		mutex.Unlock()
+
+		return nil
+
+	})
+	if err != nil {
+		return tracksMetadata, err
+	}
+
+	return tracksMetadata, nil
+
+}
+
+func readTrackMetadata(path string) (*trackMetadata, errors.Error) {
+
+	relativePath, err := filepath.Rel(itunesMusicDir, path)
+	if err != nil {
+		return nil, errors.Wrap(err, 0)
+	}
+
+	cleanedPath, err := cleanPath(relativePath)
+	if err != nil {
+		return nil, errors.Wrap(err, 0)
+	}
+
+	md5, err := computeMd5(path)
+	if err != nil {
+		return nil, errors.Wrap(err, 0)
+	}
+
+	var info infoResult
+
+	isMp3 := strings.HasSuffix(path, ".mp3")
+	isMp4 := strings.HasSuffix(path, ".m4a")
+
+	if !isMp3 && !isMp4 {
+		return nil, errors.Errorf("Unknown file format!")
+	}
+
+	if isMp3 {
+		info, err = runMP3Info(path)
+		if err != nil {
+			return nil, errors.Wrap(err, 0)
+		}
+	}
+
+	if isMp4 {
+		info, err = runMP4Info(path)
+		if err != nil {
+			return nil, errors.Wrap(err, 0)
+		}
+	}
+
+	metadata := trackMetadata{
+		OriginalPath: path,
+		CleanedPath:  cleanedPath,
+		Artist:       info.Artist,
+		Name:         info.Name,
+		Length:       info.Length,
+		Hash:         md5,
+		Codec:        info.Codec,
+	}
+
+	return &metadata, nil
 
 }
 
@@ -120,21 +322,281 @@ func isMn(r rune) bool {
 	return unicode.Is(unicode.Mn, r) // Mn: nonspacing marks
 }
 
-func cleanPath(basePath, destPath, path string) (string, error) {
-
-	newPath := strings.Replace(path, basePath, destPath, 1)
+func cleanPath(path string) (string, error) {
 
 	t := transform.Chain(norm.NFD, transform.RemoveFunc(isMn), norm.NFC)
-	newPath, _, err := transform.String(t, newPath)
+	path, _, err := transform.String(t, path)
 	if err != nil {
 		return "", err
 	}
 
-	return forbiddenCharsRegexp.ReplaceAllString(newPath, "_"), nil
+	return forbiddenCharsRegexp.ReplaceAllString(path, "_"), nil
 
 }
 
-func exportPlaylists(basePath, destPath string, playlists map[string]m3u.Playlist) error {
+type infoResult struct {
+	Length float64
+	Codec  codec
+	Artist string
+	Name   string
+}
+
+func runMP4Info(path string) (infoResult, errors.Error) {
+
+	result := infoResult{}
+
+	cmd := exec.Command("mp4info", path)
+	b, err := cmd.Output()
+	if err != nil {
+		return result, errors.WrapPrefix(err, "Error running mp4info: ", 0)
+	}
+
+	output := string(b)
+	matches := mp4InfoRegexp.FindStringSubmatch(output)
+
+	codecStr := matches[1]
+	lengthStr := matches[2]
+	artist := matches[3]
+	name := matches[4]
+
+	switch codecStr {
+	case "MPEG-4 AAC LC":
+		result.Codec = codecAAC
+	case "alac":
+		result.Codec = codecALAC
+	}
+
+	length, err := strconv.ParseFloat(lengthStr, 64)
+	if err != nil {
+		return result, errors.Wrap(err, 0)
+	}
+	result.Length = length
+
+	result.Artist = artist
+	result.Name = name
+
+	return result, nil
+
+}
+
+func runMP3Info(path string) (infoResult, errors.Error) {
+
+	result := infoResult{}
+
+	cmd := exec.Command("mp3info", "-p", "%a\\t%t\\t%S", path)
+	b, err := cmd.Output()
+	if err != nil {
+		return result, errors.WrapPrefix(err, "Error running mp3info", 0)
+	}
+
+	output := string(b)
+	matches := strings.Split(output, "\t")
+
+	artist := matches[0]
+	name := matches[1]
+	lengthStr := matches[2]
+
+	length, err := strconv.ParseFloat(lengthStr, 64)
+	if err != nil {
+		return result, errors.Wrap(err, 0)
+	}
+	result.Length = length
+
+	result.Artist = artist
+	result.Name = name
+	result.Codec = codecMP3
+
+	return result, nil
+
+}
+
+func computeMd5(path string) (string, errors.Error) {
+
+	var result []byte
+
+	file, err := os.Open(path)
+	if err != nil {
+		return "", errors.Wrap(err, 0)
+	}
+	defer file.Close()
+
+	hash := md5.New()
+	_, err = io.Copy(hash, file)
+	if err != nil {
+		return "", errors.Wrap(err, 0)
+	}
+
+	sum := fmt.Sprintf("%x", hash.Sum(result))
+	return sum, nil
+
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true
+	}
+
+	return false
+}
+
+func ensureFolderExists(path string) errors.Error {
+	err := os.MkdirAll(path, 0755)
+	if err != nil {
+		return errors.Wrap(err, 0)
+	}
+	return nil
+}
+
+func copyTracks(dest string, metadatas map[string]*trackMetadata) errors.Error {
+
+	total := len(metadatas)
+	input := make(chan interface{})
+
+	go func() {
+		for _, metadata := range metadatas {
+			input <- metadata
+		}
+	}()
+
+	err := parallelize(total, input, func(item interface{}) errors.Error {
+
+		metadata, ok := item.(*trackMetadata)
+		if !ok {
+			return errors.Errorf("unexpected type")
+		}
+
+		err := copyTrack(dest, metadata)
+		if err != nil {
+			return err
+		}
+
+		return nil
+
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+
+}
+
+func copyTrack(dest string, metadata *trackMetadata) errors.Error {
+
+	destPath := filepath.Join(dest, metadata.CleanedPath)
+
+	shouldCopy, err := needsCopy(destPath, metadata)
+	if err != nil {
+		return err
+	}
+
+	if shouldCopy {
+
+		err = ensureFolderExists(filepath.Dir(destPath))
+		if err != nil {
+			return err
+		}
+
+		err = copyFile(metadata.OriginalPath, destPath)
+		if err != nil {
+			return err
+		}
+
+		if metadata.Codec != codecALAC {
+			err = runAACGain(destPath)
+			if err != nil {
+				return err
+			}
+		}
+
+		err = writeHashToXattr(destPath, metadata.Hash)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+
+}
+
+func needsCopy(destPath string, srcMetadata *trackMetadata) (bool, errors.Error) {
+
+	_, err := os.Stat(destPath)
+	if err != nil { // destPath does not exist
+		return true, nil
+	}
+
+	md5, err := readHashFromXattr(destPath)
+	if err != nil {
+		return true, errors.Wrap(err, 0)
+	}
+
+	if md5 != srcMetadata.Hash {
+		return true, nil
+	}
+
+	return false, nil
+
+}
+
+func copyFile(src, dst string) errors.Error {
+
+	in, err := os.Open(src)
+	if err != nil {
+		return errors.Wrap(err, 0)
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return errors.Wrap(err, 0)
+	}
+	defer out.Close()
+
+	if _, err = io.Copy(out, in); err != nil {
+		return errors.Wrap(err, 0)
+	}
+
+	err = out.Sync()
+	if err != nil {
+		return errors.Wrap(err, 0)
+	}
+
+	return nil
+}
+
+func readHashFromXattr(path string) (string, errors.Error) {
+	cmd := exec.Command("xattr", "-p", hashXattrName, path)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", errors.Wrap(err, 0)
+	}
+
+	output := strings.TrimSpace(string(out))
+	return output, nil
+}
+
+func writeHashToXattr(path string, value string) errors.Error {
+	cmd := exec.Command("xattr", "-w", hashXattrName, value, path)
+	err := cmd.Run()
+	if err != nil {
+		return errors.Wrap(err, 0)
+	}
+
+	return nil
+}
+
+func runAACGain(path string) errors.Error {
+	cmd := exec.Command("nice", "/usr/local/bin/aacgain", "-r", "-k", "-s", "r", "-d", "9", path)
+	err := cmd.Run()
+	if err != nil {
+		return errors.Wrap(err, 0)
+	}
+	return nil
+}
+
+func exportPlaylists(destPath string, playlists map[string]m3u.Playlist, metadatas map[string]*trackMetadata) errors.Error {
 
 	for name, pl := range playlists {
 
@@ -142,20 +604,12 @@ func exportPlaylists(basePath, destPath string, playlists map[string]m3u.Playlis
 
 		for i, track := range pl {
 
-			cleanPath, err := cleanPath(basePath, destPath, track.Path)
-			if err != nil {
-				return err
-			}
-
-			relativePath, err := filepath.Rel(destPath, cleanPath)
-			if err != nil {
-				return err
-			}
+			metadata := metadatas[track.Path]
 
 			newTrack := m3u.Track{
-				Path:  relativePath,
-				Time:  track.Time,
-				Title: track.Title,
+				Path:  metadata.CleanedPath,
+				Time:  int64(metadata.Length),
+				Title: fmt.Sprintf("%s - %s", metadata.Artist, metadata.Name),
 			}
 
 			newPl[i] = newTrack
@@ -164,241 +618,74 @@ func exportPlaylists(basePath, destPath string, playlists map[string]m3u.Playlis
 
 		out, err := os.Create(filepath.Join(destPath, name))
 		if err != nil {
-			return err
+			return errors.Wrap(err, 0)
 		}
 		defer out.Close()
 
 		_, err = newPl.WriteTo(out)
 		if err != nil {
-			return err
+			return errors.Wrap(err, 0)
 		}
 
 		err = out.Sync()
 		if err != nil {
-			return err
+			return errors.Wrap(err, 0)
 		}
-
-		fmt.Println(name)
 
 	}
 
 	return nil
 }
 
-func digester(done <-chan bool, basePath, destPath string, trackChan <-chan m3u.Track, errChan chan<- error) {
-	for track := range trackChan {
-		err := copyTrack(basePath, destPath, track)
-		select {
-		case errChan <- err:
-		case <-done:
-			return
-		}
-	}
-}
+func parallelize(total int, input <-chan interface{}, callback func(item interface{}) errors.Error) errors.Error {
 
-func copyTracks(basePath, destPath string, tracks mapset.Set) error {
+	bar := pb.StartNew(total).Prefix("                   ")
+	sem := make(chan bool, runtime.NumCPU())
 
-	iterator := make(chan m3u.Track)
+	stopped := false
+	var lastErr errors.Error
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
 	go func() {
-		for t := range tracks.Iter() {
-			iterator <- t.(m3u.Track)
-		}
-		close(iterator)
-	}()
-
-	done := make(chan bool)
-	defer close(done)
-
-	errChan := make(chan error)
-	var wg sync.WaitGroup
-
-	wg.Add(copyParalellism)
-	for i := 0; i < copyParalellism; i++ {
-		go func() {
-			digester(done, basePath, destPath, iterator, errChan)
-			wg.Done()
-		}()
-	}
-
-	go func() {
-		wg.Wait()
-		close(errChan)
-	}()
-
-	for err := range errChan {
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-
-}
-
-func copyTrack(basePath, destPath string, track m3u.Track) error {
-
-	fmt.Println(track.Path)
-
-	cleanPath, err := cleanPath(basePath, destPath, track.Path)
-	if err != nil {
-		return err
-	}
-
-	err = os.MkdirAll(filepath.Dir(cleanPath), 0755)
-	if err != nil {
-		return err
-	}
-
-	err = copyFile(track.Path, cleanPath)
-	if err != nil {
-		return err
-	}
-
-	return nil
-
-}
-
-func copyFile(src, dst string) (err error) {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		cerr := out.Close()
-		if err == nil {
-			err = cerr
+		for _ = range c {
+			log.Println("Received CTRL+C, waiting for current item to finish")
+			stopped = true
 		}
 	}()
-	if _, err = io.Copy(out, in); err != nil {
-		return err
-	}
-	err = out.Sync()
-	if err != nil {
-		return err
-	}
 
-	codec, err := detectCodec(dst)
-	if err != nil {
-		return err
-	}
+	for item := range input {
 
-	if codec != CodecALAC {
-
-		cmd := exec.Command("nice", "/usr/local/bin/aacgain", "-r", "-k", "-s", "r", "-d", "9", dst)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
-		if err != nil {
-			return err
+		if stopped {
+			break
 		}
 
-	}
+		sem <- true
+		go func(item interface{}) {
+			defer func() { <-sem }()
 
-	return
-}
-
-func detectCodec(file string) (int, errors.Error) {
-
-	if strings.HasSuffix(file, ".mp3") {
-		return CodecMP3, nil
-	}
-
-	if strings.HasSuffix(file, ".m4a") {
-
-		cmd := exec.Command("mp4info", file)
-		cmd.Stderr = os.Stderr
-		out, err := cmd.Output()
-		if err != nil {
-			return CodecUnknown, errors.Wrap(err, 0)
-		}
-
-		sout := string(out)
-		if strings.Contains(sout, "audio	alac") {
-			return CodecALAC, nil
-		}
-
-		if strings.Contains(sout, "audio	MPEG-4 AAC") {
-			return CodecAAC, nil
-		}
-
-		return CodecUnknown, errors.Errorf("Format unrecognized by mp4info: %s", file)
-
-	}
-
-	return CodecUnknown, errors.Errorf("Unknow file format: %s", file)
-
-}
-
-func addPlaylists(paths []string) (map[string]m3u.Playlist, error) {
-
-	playlists := make(map[string]m3u.Playlist)
-	var mutex sync.Mutex
-
-	wg := sync.WaitGroup{}
-	wg.Add(len(paths))
-
-	errChan := make(chan error)
-
-	for _, path := range paths {
-
-		go func(path string) {
-
-			pl, err := addPlaylist(path)
+			err := callback(item)
 			if err != nil {
-				errChan <- err
-				return
+				stopped = true
+				lastErr = err
 			}
-			name := filepath.Base(path)
 
-			mutex.Lock()
-			playlists[name] = pl
-			mutex.Unlock()
-
-			errChan <- nil
-			wg.Done()
-
-		}(path)
+			bar.Increment()
+		}(item)
 
 	}
 
-	go func() {
-		wg.Wait()
-		close(errChan)
-	}()
-
-	for err := range errChan {
-		if err != nil {
-			return nil, err
-		}
+	for i := 0; i < cap(sem); i++ {
+		sem <- true
 	}
 
-	return playlists, nil
-}
+	bar.Finish()
+	signal.Reset(os.Interrupt)
+	close(c)
 
-func addPlaylist(path string) (m3u.Playlist, error) {
-
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+	if lastErr != nil {
+		return lastErr
 	}
-	defer f.Close()
-
-	pl, err := m3u.Parse(f)
-	if err != nil {
-		return nil, err
-	}
-
-	for i, track := range pl {
-		track.Path = strings.Replace(track.Path, "file://", "", 1)
-		tracks.Add(track)
-		pl[i] = track
-	}
-
-	return pl, nil
+	return nil
 
 }
