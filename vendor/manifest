@@ -26,6 +26,14 @@
 			"notests": true
 		},
 		{
+			"importpath": "github.com/kuba--/xattr",
+			"repository": "https://github.com/kuba--/xattr",
+			"vcs": "git",
+			"revision": "6c6c9802872b9d2b2ca6f877d86a25040121b23f",
+			"branch": "master",
+			"notests": true
+		},
+		{
 			"importpath": "github.com/mattn/go-colorable",
 			"repository": "https://github.com/mattn/go-colorable",
 			"vcs": "",
