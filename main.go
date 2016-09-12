@@ -457,6 +457,7 @@ func copyTracks(dest string, metadatas map[string]*trackMetadata) errors.Error {
 		for _, metadata := range metadatas {
 			input <- metadata
 		}
+		close(input)
 	}()
 
 	err := parallelize(total, input, func(item interface{}) errors.Error {
