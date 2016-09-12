@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/deckarep/golang-set"
+	"github.com/kuba--/xattr"
 	"github.com/ushis/m3u"
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
@@ -568,19 +569,16 @@ func copyFile(src, dst string) errors.Error {
 }
 
 func readHashFromXattr(path string) (string, errors.Error) {
-	cmd := exec.Command("xattr", "-p", hashXattrName, path)
-	out, err := cmd.Output()
+
+	out, err := xattr.Getxattr(path, hashXattrName)
 	if err != nil {
 		return "", errors.Wrap(err, 0)
 	}
-
-	output := strings.TrimSpace(string(out))
-	return output, nil
+	return string(out), nil
 }
 
 func writeHashToXattr(path string, value string) errors.Error {
-	cmd := exec.Command("xattr", "-w", hashXattrName, value, path)
-	err := cmd.Run()
+	err := xattr.Setxattr(path, hashXattrName, []byte(value))
 	if err != nil {
 		return errors.Wrap(err, 0)
 	}
