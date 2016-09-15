@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,6 +104,14 @@ func main() {
 	log.Println("Writing playlists...")
 
 	err = exportPlaylists(destFolder, playlists, metadatas)
+	if err != nil {
+		fatal(err)
+	}
+
+	log.Println("done")
+	log.Println("Removing leftovers...")
+
+	err = removeLeftovers(destFolder, playlists, metadatas)
 	if err != nil {
 		fatal(err)
 	}
@@ -685,6 +694,83 @@ func parallelize(total int, input <-chan interface{}, callback func(item interfa
 	if lastErr != nil {
 		return lastErr
 	}
+	return nil
+
+}
+
+func removeLeftovers(destFolder string, playlists map[string]m3u.Playlist, metadatas map[string]*trackMetadata) errors.Error {
+
+	actualPaths := mapset.NewSet()
+	supposedPaths := mapset.NewSet()
+
+	err := filepath.Walk(destFolder, func(path string, info os.FileInfo, walkErr error) error {
+
+		if walkErr != nil {
+			return walkErr
+		}
+
+		relativePath, err := filepath.Rel(destFolder, path)
+		if err != nil {
+			return errors.Wrap(err, 0)
+		}
+
+		if relativePath == "." || filepath.Base(relativePath) == ".DS_Store" {
+			return nil
+		}
+
+		actualPaths.Add(strings.ToLower(relativePath)) // osx is case insensitive
+		return nil
+
+	})
+	if err != nil {
+		return errors.Wrap(err, 0)
+	}
+
+	for _, metadata := range metadatas {
+		path := metadata.CleanedPath
+
+		for {
+			if path == "" {
+				break
+			}
+
+			supposedPaths.Add(strings.ToLower(path)) // osx is case insensitive
+			dir, _ := filepath.Split(path)
+			path = strings.TrimSuffix(dir, string(filepath.Separator))
+		}
+
+	}
+
+	for name := range playlists {
+		supposedPaths.Add(strings.ToLower(name)) // osx is case insensitive
+	}
+
+	diffSet := actualPaths.Difference(supposedPaths)
+	var diff []string
+	for item := range diffSet.Iter() {
+		path, ok := item.(string)
+		if !ok {
+			return errors.Errorf("Unknown type in path slice")
+		}
+		diff = append(diff, path)
+	}
+
+	sort.Sort(sort.Reverse(sort.StringSlice(diff))) // sort from longest first to remove folder contents first
+	for _, path := range diff {
+
+		err = os.Remove(filepath.Join(destFolder, path, ".DS_Store")) // we ignore these files earlier but need to remove them if they exist
+		if err != nil {
+			// ignore errors if there is no .DS_Store
+		}
+		err = os.Remove(filepath.Join(destFolder, path))
+		if err != nil {
+			return errors.Wrap(err, 0)
+		}
+
+		log.Printf("    Removed: %s\n", path)
+
+	}
+
 	return nil
 
 }
