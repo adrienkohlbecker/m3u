@@ -25,7 +25,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 	"gopkg.in/cheggaaa/pb.v1"
 
-	"gitlab.kohlby.fr/adrienkohlbecker/ci/utils/errors"
+	"github.com/adrienkohlbecker/errors"
 )
 
 var playlistsToExport = []string{"BEST", "GOOGLE PLAY", "DNB", "TRANCE", "ELECTRONNIE", "ABOU", "COLINE", "ELECTROSYLVESTRE", "STARRED", "GRATTE", "PARTY"}
