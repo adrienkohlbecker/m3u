@@ -28,7 +28,7 @@ import (
 	"github.com/adrienkohlbecker/errors"
 )
 
-var playlistsToExport = []string{"BEST", "GOOGLE PLAY", "DNB", "TRANCE", "ELECTRONNIE", "ABOU", "COLINE", "ELECTROSYLVESTRE", "STARRED", "GRATTE", "PARTY"}
+var playlistsToExport = []string{"RECENT", "BEST", "GOOGLE PLAY", "DNB", "TRANCE", "ELECTRONNIE", "ABOU", "COLINE", "ELECTROSYLVESTRE", "STARRED", "GRATTE", "PARTY"}
 
 const itunesMusicDir = "/Users/adrien/Music/iTunes/iTunes Media/Music"
 const destFolder = "/Users/adrien/Dropbox/Music"
