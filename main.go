@@ -364,6 +364,10 @@ func runMP4Info(path string) (infoResult, errors.Error) {
 	output := string(b)
 	matches := mp4InfoRegexp.FindStringSubmatch(output)
 
+	if len(matches) < 1 {
+		return result, errors.Errorf("Unknown coded: %s", output)
+	}
+
 	codecStr := matches[1]
 	lengthStr := matches[2]
 	artist := matches[3]
