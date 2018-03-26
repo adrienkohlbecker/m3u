@@ -28,10 +28,10 @@ import (
 	"github.com/adrienkohlbecker/errors"
 )
 
-var playlistsToExport = []string{"RECENT", "BEST", "GOOGLE PLAY", "DNB", "TRANCE", "ELECTRONNIE", "ABOU", "COLINE", "ELECTROSYLVESTRE", "STARRED", "GRATTE", "PARTY"}
+var playlistsToExport = []string{"RECENT", "BEST", "SONGS", "GOOGLE PLAY", "DNB", "TRANCE", "ELECTROSYLVESTRE", "GRATTE", "PARTY"}
 
-const itunesMusicDir = "/Users/adrien/Music/iTunes/iTunes Media/Music"
-const destFolder = "/Users/adrien/Dropbox/Music"
+const itunesMusicDir = "/Users/ak/Music/iTunes/iTunes Media/Music"
+const destFolder = "/Users/ak/Google Drive/Music"
 const hashXattrName = "fr.kohlby.m3u:hash"
 
 var forbiddenCharsRegexp = regexp.MustCompile("[^a-zA-Z0-9\\.\\/ ]")
@@ -585,7 +585,7 @@ func readHashFromXattr(path string) (string, errors.Error) {
 
 	out, err := xattr.Getxattr(path, hashXattrName)
 	if err != nil {
-		return "", errors.Wrap(err, 0)
+		return "", nil
 	}
 	return string(out), nil
 }
