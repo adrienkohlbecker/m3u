@@ -18,14 +18,13 @@ import (
 	"sync"
 	"unicode"
 
-	"github.com/deckarep/golang-set"
-	"github.com/kuba--/xattr"
+ 	mapset "github.com/deckarep/golang-set"
+	"github.com/pkg/xattr"
 	"github.com/ushis/m3u"
-	"golang.org/x/text/transform"
-	"golang.org/x/text/unicode/norm"
-	"gopkg.in/cheggaaa/pb.v1"
-
-	"github.com/adrienkohlbecker/errors"
+ 	"golang.org/x/text/transform"
+ 	"golang.org/x/text/unicode/norm"
+ 	"gopkg.in/cheggaaa/pb.v1"
+	"github.com/go-errors/errors"
 )
 
 var playlistsToExport = []string{"RECENT", "BEST", "SONGS", "GOOGLE PLAY", "DNB", "TRANCE", "ELECTROSYLVESTRE", "GRATTE", "PARTY"}
@@ -46,8 +45,8 @@ const (
 	codecALAC
 )
 
-func fatal(err errors.Error) {
-	fmt.Println(err.ErrorStack())
+func fatal(err error) {
+	fmt.Println(err.(*errors.Error).ErrorStack())
 	os.Exit(1)
 }
 
@@ -120,7 +119,7 @@ func main() {
 
 }
 
-func createTemporaryDirectory() (string, errors.Error) {
+func createTemporaryDirectory() (string, error) {
 
 	m3uPath, err := ioutil.TempDir(os.TempDir(), "m3u")
 	if err != nil {
@@ -130,12 +129,12 @@ func createTemporaryDirectory() (string, errors.Error) {
 
 }
 
-func exportPlaylistsFromItunes(exportDirectory string) errors.Error {
+func exportPlaylistsFromItunes(exportDirectory string) error {
 
 	cmd := exec.Command(
 		"java",
 		"-jar",
-		"./vendor/iTunesExportScala-2.2.2/itunesexport.jar",
+		"./itunes/iTunesExportScala-2.2.2/itunesexport.jar",
 		"-fileTypes=ALL",
 		fmt.Sprintf("-includePlaylist=%s", strings.Join(playlistsToExport, ",")),
 		fmt.Sprintf("-outputDir=%s", exportDirectory),
@@ -149,7 +148,7 @@ func exportPlaylistsFromItunes(exportDirectory string) errors.Error {
 
 }
 
-func listPlaylistFiles(exportDirectory string) ([]string, errors.Error) {
+func listPlaylistFiles(exportDirectory string) ([]string, error) {
 
 	paths := []string{}
 
@@ -176,7 +175,7 @@ func listPlaylistFiles(exportDirectory string) ([]string, errors.Error) {
 
 }
 
-func readPlaylists(playlistFiles []string) (map[string]m3u.Playlist, errors.Error) {
+func readPlaylists(playlistFiles []string) (map[string]m3u.Playlist, error) {
 
 	playlists := make(map[string]m3u.Playlist)
 
@@ -196,7 +195,7 @@ func readPlaylists(playlistFiles []string) (map[string]m3u.Playlist, errors.Erro
 
 }
 
-func readPlaylist(path string) (m3u.Playlist, errors.Error) {
+func readPlaylist(path string) (m3u.Playlist, error) {
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -241,13 +240,13 @@ type trackMetadata struct {
 	Codec        codec
 }
 
-func readTracksMetadata(tracks mapset.Set) (map[string]*trackMetadata, errors.Error) {
+func readTracksMetadata(tracks mapset.Set) (map[string]*trackMetadata, error) {
 
 	tracksMetadata := make(map[string]*trackMetadata)
 	mutex := sync.Mutex{}
 	total := tracks.Cardinality()
 
-	err := parallelize(total, tracks.Iter(), func(item interface{}) errors.Error {
+	err := parallelize(total, tracks.Iter(), func(item interface{}) error {
 
 		path, ok := item.(string)
 		if !ok {
@@ -274,7 +273,7 @@ func readTracksMetadata(tracks mapset.Set) (map[string]*trackMetadata, errors.Er
 
 }
 
-func readTrackMetadata(path string) (*trackMetadata, errors.Error) {
+func readTrackMetadata(path string) (*trackMetadata, error) {
 
 	relativePath, err := filepath.Rel(itunesMusicDir, path)
 	if err != nil {
@@ -351,7 +350,7 @@ type infoResult struct {
 	Name   string
 }
 
-func runMP4Info(path string) (infoResult, errors.Error) {
+func runMP4Info(path string) (infoResult, error) {
 
 	result := infoResult{}
 
@@ -393,7 +392,7 @@ func runMP4Info(path string) (infoResult, errors.Error) {
 
 }
 
-func runMP3Info(path string) (infoResult, errors.Error) {
+func runMP3Info(path string) (infoResult, error) {
 
 	result := infoResult{}
 
@@ -424,7 +423,7 @@ func runMP3Info(path string) (infoResult, errors.Error) {
 
 }
 
-func computeMd5(path string) (string, errors.Error) {
+func computeMd5(path string) (string, error) {
 
 	var result []byte
 
@@ -454,7 +453,7 @@ func fileExists(path string) bool {
 	return false
 }
 
-func ensureFolderExists(path string) errors.Error {
+func ensureFolderExists(path string) error {
 	err := os.MkdirAll(path, 0755)
 	if err != nil {
 		return errors.Wrap(err, 0)
@@ -462,7 +461,7 @@ func ensureFolderExists(path string) errors.Error {
 	return nil
 }
 
-func copyTracks(dest string, metadatas map[string]*trackMetadata) errors.Error {
+func copyTracks(dest string, metadatas map[string]*trackMetadata) error {
 
 	total := len(metadatas)
 	input := make(chan interface{})
@@ -474,7 +473,7 @@ func copyTracks(dest string, metadatas map[string]*trackMetadata) errors.Error {
 		close(input)
 	}()
 
-	err := parallelize(total, input, func(item interface{}) errors.Error {
+	err := parallelize(total, input, func(item interface{}) error {
 
 		metadata, ok := item.(*trackMetadata)
 		if !ok {
@@ -497,7 +496,7 @@ func copyTracks(dest string, metadatas map[string]*trackMetadata) errors.Error {
 
 }
 
-func copyTrack(dest string, metadata *trackMetadata) errors.Error {
+func copyTrack(dest string, metadata *trackMetadata) error {
 
 	destPath := filepath.Join(dest, metadata.CleanedPath)
 
@@ -535,7 +534,7 @@ func copyTrack(dest string, metadata *trackMetadata) errors.Error {
 
 }
 
-func needsCopy(destPath string, srcMetadata *trackMetadata) (bool, errors.Error) {
+func needsCopy(destPath string, srcMetadata *trackMetadata) (bool, error) {
 
 	_, err := os.Stat(destPath)
 	if err != nil { // destPath does not exist
@@ -555,7 +554,7 @@ func needsCopy(destPath string, srcMetadata *trackMetadata) (bool, errors.Error)
 
 }
 
-func copyFile(src, dst string) errors.Error {
+func copyFile(src, dst string) error {
 
 	in, err := os.Open(src)
 	if err != nil {
@@ -581,7 +580,7 @@ func copyFile(src, dst string) errors.Error {
 	return nil
 }
 
-func readHashFromXattr(path string) (string, errors.Error) {
+func readHashFromXattr(path string) (string, error) {
 
 	out, err := xattr.Getxattr(path, hashXattrName)
 	if err != nil {
@@ -590,7 +589,7 @@ func readHashFromXattr(path string) (string, errors.Error) {
 	return string(out), nil
 }
 
-func writeHashToXattr(path string, value string) errors.Error {
+func writeHashToXattr(path string, value string) error {
 	err := xattr.Setxattr(path, hashXattrName, []byte(value))
 	if err != nil {
 		return errors.Wrap(err, 0)
@@ -599,7 +598,7 @@ func writeHashToXattr(path string, value string) errors.Error {
 	return nil
 }
 
-func runAACGain(path string) errors.Error {
+func runAACGain(path string) error {
 	cmd := exec.Command("nice", "/usr/local/bin/aacgain", "-r", "-k", "-s", "r", "-d", "9", path)
 	err := cmd.Run()
 	if err != nil {
@@ -608,7 +607,7 @@ func runAACGain(path string) errors.Error {
 	return nil
 }
 
-func exportPlaylists(destPath string, playlists map[string]m3u.Playlist, metadatas map[string]*trackMetadata) errors.Error {
+func exportPlaylists(destPath string, playlists map[string]m3u.Playlist, metadatas map[string]*trackMetadata) error {
 
 	for name, pl := range playlists {
 
@@ -649,13 +648,13 @@ func exportPlaylists(destPath string, playlists map[string]m3u.Playlist, metadat
 	return nil
 }
 
-func parallelize(total int, input <-chan interface{}, callback func(item interface{}) errors.Error) errors.Error {
+func parallelize(total int, input <-chan interface{}, callback func(item interface{}) error) error {
 
 	bar := pb.StartNew(total).Prefix("                   ")
 	sem := make(chan bool, runtime.NumCPU())
 
 	stopped := false
-	var lastErr errors.Error
+	var lastErr error
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
@@ -702,7 +701,7 @@ func parallelize(total int, input <-chan interface{}, callback func(item interfa
 
 }
 
-func removeLeftovers(destFolder string, playlists map[string]m3u.Playlist, metadatas map[string]*trackMetadata) errors.Error {
+func removeLeftovers(destFolder string, playlists map[string]m3u.Playlist, metadatas map[string]*trackMetadata) error {
 
 	actualPaths := mapset.NewSet()
 	supposedPaths := mapset.NewSet()
