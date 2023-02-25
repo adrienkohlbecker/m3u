@@ -10,7 +10,6 @@ require (
 	github.com/mattn/go-isatty v0.0.0-20160806122752-66b8e73f3f5c // indirect
 	github.com/pkg/xattr v0.0.0-20160813101438-6c6c9802872b
 	github.com/ushis/m3u v0.0.0-20150127162843-94396b784733
-	golang.org/x/sys v0.0.0-20160907145946-30de6d19a3bd // indirect
-	golang.org/x/text v0.0.0-20160429144731-bd1c9905f55d
+	golang.org/x/text v0.3.8
 	gopkg.in/cheggaaa/pb.v1 v1.0.5
 )
